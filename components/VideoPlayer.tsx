@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import YouTube, { YouTubeProps, YouTubePlayer } from 'react-youtube';
 import { socket } from '@/lib/socket';
 
@@ -13,28 +13,33 @@ export default function VideoPlayer({ roomId, videoId }: VideoPlayerProps) {
   const playerRef = useRef<YouTubePlayer | null>(null);
   const [isReady, setIsReady] = useState(false);
 
-  // Tracks the last time we emitted a play/pause so we don't echo back
-  const isExternalCommandRef = useRef(false);
-  const externalCommandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Track last known time to detect user seeking via scrub bar
-  const lastKnownTimeRef = useRef(0);
+  // ── Anti-loop mechanism ──
+  // Instead of a short timer, we count how many state-change events to ignore.
+  // A single seekTo + playVideo can fire 2-3 state changes (BUFFERING → PLAYING),
+  // so we absorb multiple events after each external command.
+  const ignoreCountRef = useRef(0);
 
-  // Helper: set the external-command guard with a short, auto-clearing window
-  const setExternalGuard = useCallback(() => {
-    isExternalCommandRef.current = true;
-    if (externalCommandTimerRef.current) {
-      clearTimeout(externalCommandTimerRef.current);
-    }
-    externalCommandTimerRef.current = setTimeout(() => {
-      isExternalCommandRef.current = false;
-      externalCommandTimerRef.current = null;
-    }, 150); // 150ms is enough for the YouTube API to fire its state-change event
-  }, []);
+  // Cooldown: don't emit commands within 1s of the last emission
+  const lastEmitTimeRef = useRef(0);
+
+  const canEmit = () => {
+    return Date.now() - lastEmitTimeRef.current > 1000;
+  };
+
+  const emitCommand = (action: string, time: number) => {
+    lastEmitTimeRef.current = Date.now();
+    socket.emit('video-command', { action, time, roomId });
+  };
 
   const onStateChange: YouTubeProps['onStateChange'] = (event) => {
-    if (isExternalCommandRef.current) {
-      return; // Swallow events triggered by incoming socket commands
+    // If we have pending ignores, consume one and skip
+    if (ignoreCountRef.current > 0) {
+      ignoreCountRef.current--;
+      return;
     }
+
+    // Don't emit if we're in cooldown (recently received a command)
+    if (!canEmit()) return;
 
     const player = event.target;
     const currentTime = player.getCurrentTime();
@@ -42,18 +47,12 @@ export default function VideoPlayer({ roomId, videoId }: VideoPlayerProps) {
 
     // YT.PlayerState.PLAYING = 1
     if (state === 1) {
-      // If the time jumped by more than 1s since last known, user scrubbed — emit seek first
-      if (Math.abs(currentTime - lastKnownTimeRef.current) > 1) {
-        socket.emit('video-command', { action: 'seek', time: currentTime, roomId });
-      }
-      socket.emit('video-command', { action: 'play', time: currentTime, roomId });
+      emitCommand('play', currentTime);
     }
     // YT.PlayerState.PAUSED = 2
     else if (state === 2) {
-      socket.emit('video-command', { action: 'pause', time: currentTime, roomId });
+      emitCommand('pause', currentTime);
     }
-
-    lastKnownTimeRef.current = currentTime;
   };
 
   useEffect(() => {
@@ -61,27 +60,29 @@ export default function VideoPlayer({ roomId, videoId }: VideoPlayerProps) {
       const player = playerRef.current;
       if (!player) return;
 
-      setExternalGuard();
       const currentTime = player.getCurrentTime() || 0;
 
       if (data.action === 'play') {
-        // Seek if drift exceeds 0.5s — keeps sync tight
-        if (Math.abs(currentTime - data.time) > 0.5) {
+        // Ignore the next 3 state changes (BUFFERING + PLAYING + possible extras)
+        ignoreCountRef.current = 3;
+        lastEmitTimeRef.current = Date.now();
+
+        if (Math.abs(currentTime - data.time) > 1) {
           player.seekTo(data.time, true);
         }
         player.playVideo();
       } else if (data.action === 'pause') {
-        if (Math.abs(currentTime - data.time) > 0.5) {
+        ignoreCountRef.current = 2;
+        lastEmitTimeRef.current = Date.now();
+
+        if (Math.abs(currentTime - data.time) > 1) {
           player.seekTo(data.time, true);
         }
         player.pauseVideo();
       } else if (data.action === 'seek') {
+        ignoreCountRef.current = 3;
+        lastEmitTimeRef.current = Date.now();
         player.seekTo(data.time, true);
-      } else if (data.action === 'sync') {
-        // Heartbeat sync — correct drift silently without play/pause changes
-        if (Math.abs(currentTime - data.time) > 0.5) {
-          player.seekTo(data.time, true);
-        }
       }
     };
 
@@ -90,30 +91,7 @@ export default function VideoPlayer({ roomId, videoId }: VideoPlayerProps) {
     return () => {
       socket.off('receive-video-command', handleCommand);
     };
-  }, [setExternalGuard]);
-
-  // ── Periodic sync heartbeat ──
-  // Every 3 seconds while playing, broadcast our current time so both sides stay in lock-step
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const player = playerRef.current;
-      if (!player) return;
-
-      try {
-        const state = player.getPlayerState();
-        // Only sync while playing (state === 1)
-        if (state === 1) {
-          const currentTime = player.getCurrentTime();
-          lastKnownTimeRef.current = currentTime;
-          socket.emit('video-command', { action: 'sync', time: currentTime, roomId });
-        }
-      } catch {
-        // Player may not be ready yet — ignore
-      }
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [roomId]);
+  }, []);
 
   return (
     <div className="w-full aspect-video bg-black rounded-2xl overflow-hidden shadow-[0_0_20px_rgba(34,211,238,0.15)] border border-cyan-900/50 relative group">
@@ -146,3 +124,4 @@ export default function VideoPlayer({ roomId, videoId }: VideoPlayerProps) {
     </div>
   );
 }
+
