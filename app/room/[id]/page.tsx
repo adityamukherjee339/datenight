@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { socket } from '@/lib/socket';
 import { useParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -27,6 +27,13 @@ export default function RoomPage() {
   
   // Interaction State
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
+
+  // Auto-scroll ref
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const triggerHeart = useCallback(() => {
     const newHeart = { id: Date.now() + Math.random(), left: Math.random() * 80 + 10 };
@@ -215,6 +222,7 @@ export default function RoomPage() {
                   <div className="w-1.5 h-1.5 bg-cyan-900 rounded-full animate-ping" />
                 </div>
               )}
+              <div ref={messagesEndRef} />
             </div>
             
             {isPartnerTyping && (
