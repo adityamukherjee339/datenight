@@ -142,9 +142,57 @@ function CallContainer({ roomId, onLeave }: { roomId: string, onLeave: () => voi
   // Since this is a Couple app, we only care about the first remote user
   const partner = remoteUsers[0];
 
+  // --- Local PiP Drag State ---
+  const containerRef = useRef<HTMLDivElement>(null);
+  const pipRef = useRef<HTMLDivElement>(null);
+  const [pipPos, setPipPos] = useState({ right: 16, top: 16 });
+  const isDraggingPip = useRef(false);
+  const dragStartPip = useRef({ pointerX: 0, pointerY: 0, startRight: 0, startTop: 0 });
+
+  const onPipPointerDown = useCallback((e: React.PointerEvent) => {
+    isDraggingPip.current = true;
+    dragStartPip.current = {
+      pointerX: e.clientX,
+      pointerY: e.clientY,
+      startRight: pipPos.right,
+      startTop: pipPos.top,
+    };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+    e.stopPropagation();
+  }, [pipPos]);
+
+  const onPipPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!isDraggingPip.current) return;
+    const dx = dragStartPip.current.pointerX - e.clientX;
+    const dy = e.clientY - dragStartPip.current.pointerY;
+    
+    if (containerRef.current && pipRef.current) {
+      const parent = containerRef.current;
+      const child = pipRef.current;
+      
+      const padding = 16;
+      // Allow dragging bounds inside the parent container
+      const maxRight = Math.max(padding, parent.clientWidth - child.clientWidth - padding);
+      const maxTop = Math.max(padding, parent.clientHeight - child.clientHeight - padding);
+      
+      setPipPos({
+        right: Math.max(padding, Math.min(maxRight, dragStartPip.current.startRight + dx)),
+        top: Math.max(padding, Math.min(maxTop, dragStartPip.current.startTop + dy)),
+      });
+    }
+  }, []);
+
+  const onPipPointerUp = useCallback(() => {
+    isDraggingPip.current = false;
+  }, []);
+
   return (
     <>
-      <div className="flex-grow relative bg-zinc-900 flex items-center justify-center overflow-hidden">
+      <div 
+        ref={containerRef}
+        className="flex-grow relative bg-zinc-900 flex items-center justify-center overflow-hidden"
+      >
         {/* Remote Video Area (Partner) */}
         <div className="absolute inset-0 bg-black">
           {partner ? (
@@ -158,7 +206,14 @@ function CallContainer({ roomId, onLeave }: { roomId: string, onLeave: () => voi
         </div>
 
         {/* Local Video PiP Area (You) */}
-        <div className="absolute top-4 right-4 w-1/3 aspect-[3/4] bg-zinc-800 border-2 border-zinc-700/50 rounded-lg drop-shadow-2xl overflow-hidden flex items-center justify-center z-10 transition-transform hover:scale-105 origin-top-right">
+        <div 
+          ref={pipRef}
+          onPointerDown={onPipPointerDown}
+          onPointerMove={onPipPointerMove}
+          onPointerUp={onPipPointerUp}
+          style={{ right: pipPos.right, top: pipPos.top }}
+          className={`absolute w-1/3 aspect-[3/4] bg-zinc-800 border-2 border-zinc-700/50 rounded-lg drop-shadow-2xl overflow-hidden flex items-center justify-center z-10 origin-top-right cursor-grab active:cursor-grabbing select-none hover:ring-2 hover:ring-white/20 transition-[box-shadow_transform] ${isDraggingPip.current ? 'scale-105' : ''}`}
+        >
           {camOn && localCameraTrack ? (
             <LocalUser 
               audioTrack={localMicrophoneTrack} 
