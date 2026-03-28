@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Mic, MicOff, Video, VideoOff, AlertTriangle, Minimize2, Maximize2 } from 'lucide-react';
 import AgoraRTC, {
   AgoraRTCProvider,
@@ -21,14 +21,61 @@ export default function VideoChat({ roomId }: { roomId: string }) {
   const [minimized, setMinimized] = useState(false);
   
   // Agora Client Initialization
-  // Ensure this executes safely on the client without recreation loops
-  // mode "rtc" is meant for one-to-one or small group calls
   const [client] = useState(() => AgoraRTC.createClient({ codec: "vp8", mode: "rtc" }));
 
+  // --- Drag-to-reposition state ---
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ x: 24, y: 24 }); // distance from bottom-right
+  const isDragging = useRef(false);
+  const dragStart = useRef({ pointerX: 0, pointerY: 0, startX: 0, startY: 0 });
+
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    // Don't start drag if clicking a button or interactive element
+    if ((e.target as HTMLElement).closest('button, input, [data-no-drag]')) return;
+    isDragging.current = true;
+    dragStart.current = {
+      pointerX: e.clientX,
+      pointerY: e.clientY,
+      startX: position.x,
+      startY: position.y,
+    };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }, [position]);
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!isDragging.current) return;
+    const dx = dragStart.current.pointerX - e.clientX;
+    const dy = dragStart.current.pointerY - e.clientY;
+    const el = containerRef.current;
+    const maxX = window.innerWidth - (el?.offsetWidth || 288) - 4;
+    const maxY = window.innerHeight - (el?.offsetHeight || 384) - 4;
+    setPosition({
+      x: Math.max(4, Math.min(maxX, dragStart.current.startX + dx)),
+      y: Math.max(4, Math.min(maxY, dragStart.current.startY + dy)),
+    });
+  }, []);
+
+  const onPointerUp = useCallback(() => {
+    isDragging.current = false;
+  }, []);
+
   return (
-    <div className={`fixed bottom-6 right-6 bg-zinc-950 border border-cyan-500/30 rounded-2xl overflow-hidden shadow-[0_0_30px_rgba(34,211,238,0.15)] z-50 flex flex-col transition-all duration-300 ease-in-out group/pip ${
-      minimized ? 'w-14 h-14' : 'w-72 aspect-[3/4]'
-    }`}>
+    <div
+      ref={containerRef}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      style={{ right: position.x, bottom: position.y }}
+      className={`fixed bg-zinc-950 border border-cyan-500/30 rounded-2xl overflow-hidden shadow-[0_0_30px_rgba(34,211,238,0.15)] z-50 flex flex-col transition-shadow duration-300 ease-in-out group/pip select-none ${
+        minimized ? 'w-14 h-14' : 'w-72 aspect-[3/4]'
+      } ${isDragging.current ? '' : 'transition-all'}`}
+    >
+      {/* Drag handle indicator */}
+      {!minimized && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 w-8 h-1 bg-white/20 rounded-full cursor-grab active:cursor-grabbing" />
+      )}
+
       {/* Minimize / Maximize button */}
       <button
         onClick={() => setMinimized(prev => !prev)}
